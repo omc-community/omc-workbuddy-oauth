@@ -379,6 +379,10 @@ sees the mapped status:
 | A `400` saying `model [...] is not allowed for user type [...]` | `400`, code `unknown_model`, worded as the model not being available for the plan; the model is hidden from that credential's list for twelve hours |
 | A `400` saying `prompt is too long` | `400`, worded as the prompt being longer than the model takes |
 | Any other `4xx` | The upstream status with WorkBuddy's message and code |
+
+The `14018` refusal is model-scoped on purpose: WorkBuddy's own message says
+another model still works, so only the reporting model rests. CPA v8.0.62 and
+later keep that scope; the plugin never asks CPA to cool the whole credential.
 | `5xx` | `502` |
 | Transport failure, or an unavailable upstream stream | `503` |
 | The caller closed the request before WorkBuddy answered (`context canceled`) | `499`, code `client_closed` |

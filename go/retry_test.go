@@ -135,6 +135,27 @@ func TestClassifyLeavesAnUnstatedResetAlone(t *testing.T) {
 	}
 }
 
+// TestFrequencyLimitStaysModelScoped pins the scope of WorkBuddy's 14018: the
+// refusal names an instant for this model and tells the user another model still
+// works, so the whole credential must stay in rotation.
+func TestFrequencyLimitStaysModelScoped(t *testing.T) {
+	body, err := json.Marshal(map[string]any{
+		"code": 14018,
+		"msg":  "usage exceeds frequency limit, your usage will reset at 2026-11-09 21:01:11 UTC+8",
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	err = classifyUpstream(testAccount(t), http.StatusTooManyRequests, nil, body)
+	var perr *pluginabi.Error
+	if !errors.As(err, &perr) {
+		t.Fatalf("err = %#v", err)
+	}
+	if perr.CredentialScoped {
+		t.Fatalf("CredentialScoped = true, want this model only")
+	}
+}
+
 // testAccount is the credential a classification test reports against.
 func testAccount(t *testing.T) credential {
 	t.Helper()

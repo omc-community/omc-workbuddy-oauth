@@ -600,7 +600,10 @@ func classifyUpstream(c credential, status int, headers http.Header, body []byte
 	case effective == http.StatusForbidden:
 		return pluginabi.NewError("forbidden", site.Name+": "+message, effective)
 	case effective == http.StatusTooManyRequests:
-		err := pluginabi.NewError("rate_limited", site.Name+" is limiting this account: "+message, effective)
+		// WorkBuddy's 14018 names an instant for this model and tells the user to
+		// switch models, so the refusal stays model-scoped: marking the whole
+		// credential would cool models the allowance still covers.
+		err := pluginabi.NewError("rate_limited", site.Name+" is limiting this model: "+message, effective)
 		err.RetryAfterSeconds = retryHint(headers, message, time.Now())
 		return err
 	case effective >= 500:
