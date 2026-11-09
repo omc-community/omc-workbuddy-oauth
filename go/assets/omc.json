@@ -1,7 +1,7 @@
 {
   "schema_version": 1,
   "plugin_id": "omc-workbuddy-oauth",
-  "plugin_version": "0.1.10",
+  "plugin_version": "0.1.11",
   "i18n": {
     "description": {
       "zh": "专为 Oh-My-CPA 适配，兼容 CLIProxyAPI 的原生 WorkBuddy 提供商插件，支持 WorkBuddy 与 WorkBuddy AI 双入口 OAuth 登录、模型发现、OpenAI 兼容请求执行与标准化配额展示。可通过 CPA 原生面板安装；OMC 声明为可选增强。",
