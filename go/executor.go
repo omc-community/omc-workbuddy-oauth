@@ -74,17 +74,15 @@ func prepareRequest(req pluginapi.ExecutorRequest, sender httpSender) (requestPl
 	}
 	normalizeChat(chat, m)
 	// WorkBuddy refuses a chat it cannot stream, so every request is streamed
-	// upstream; a client that asked for one answer gets the stream read out. That
-	// read needs the usage chunk, which WorkBuddy sends only when asked for it.
+	// upstream; ask for the usage chunk on every stream so both buffered
+	// aggregation and the host's streaming translators and usage accounting see it.
 	chat["stream"] = true
-	if !req.Stream {
-		options, _ := chat["stream_options"].(map[string]any)
-		if options == nil {
-			options = map[string]any{}
-		}
-		options["include_usage"] = true
-		chat["stream_options"] = options
+	options, _ := chat["stream_options"].(map[string]any)
+	if options == nil {
+		options = map[string]any{}
 	}
+	options["include_usage"] = true
+	chat["stream_options"] = options
 	chat["model"] = m.Key
 	body, err := json.Marshal(chat)
 	if err != nil {
@@ -230,13 +228,11 @@ func openUpstreamStream(plan requestPlan, callbackID string) (hostStreamResponse
 	return response, err
 }
 
-// streamPump copies one WorkBuddy event stream into the host stream. A frame
-// is forwarded as its bare data payload: the host's OpenAI handler adds the
-// "data: " prefix, the blank line and the [DONE] marker itself, and a host
-// that forwards plugin chunks unchanged (older CPA does) would otherwise
-// wrap the frame again and send the client "data: data: {...}", which its
-// JSON parser refuses. An event with no data (a comment, a keep-alive) is
-// not forwarded.
+// streamPump copies one WorkBuddy event stream into the host stream. Each
+// frame is forwarded as a complete "data: <json>\n\n" SSE event: cross-format
+// translators (such as OpenAI -> Anthropic) drop payloads without a "data:"
+// prefix, while same-format OpenAI streams pass through the host's SSE
+// deframer. An event with no data (a comment, a keep-alive) is not forwarded.
 type streamPump struct {
 	source     string
 	target     string
@@ -292,19 +288,29 @@ func (p *streamPump) first(ready chan<- pumpStart) pumpStart {
 	return start
 }
 
-// deliver forwards complete events, and reports false when the client's stream is
-// gone. The bare data payload is what the host accepts: it adds SSE framing itself.
+// deliver forwards complete events as framed SSE events, and reports false
+// when the client's stream is gone.
 func (p *streamPump) deliver(frames []sseFrame) bool {
 	for _, frame := range frames {
 		if isDone(frame.Data) || len(bytes.TrimSpace(frame.Data)) == 0 {
 			continue
 		}
-		if emitStreamFrame(p.target, frame.Data) != nil {
+		if emitStreamFrame(p.target, framedEvent(frame)) != nil {
 			closeStream(p.target, "client stream closed")
 			return false
 		}
 	}
 	return true
+}
+
+// framedEvent formats one upstream event as a single blank-line-terminated SSE
+// data event so both cross-format translators and the host's same-format SSE
+// deframer accept it.
+func framedEvent(frame sseFrame) []byte {
+	out := make([]byte, 0, len(frame.Data)+8)
+	out = append(out, "data: "...)
+	out = append(out, frame.Data...)
+	return append(out, '\n', '\n')
 }
 
 func (p *streamPump) run() {

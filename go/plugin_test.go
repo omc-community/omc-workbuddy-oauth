@@ -512,6 +512,85 @@ func TestExecuteStreamForwardsFrames(t *testing.T) {
 	var emitted [][]byte
 	finished := make(chan struct{})
 	pumpFinished = func(string) { close(finished) }
+	var sentPlan requestPlan
+	openHTTPStream = func(plan requestPlan, callbackID string) (hostStreamResponse, error) {
+		sentPlan = plan
+		return hostStreamResponse{StatusCode: 200, Headers: http.Header{"Content-Type": {"text/event-stream"}}, StreamID: "stream-1"}, nil
+	}
+	readStreamChunk = func(id string) (hostReadResponse, error) {
+		if next >= len(chunks) {
+			return hostReadResponse{Done: true}, nil
+		}
+		chunk := chunks[next]
+		next++
+		return hostReadResponse{Payload: chunk, Done: next == len(chunks)}, nil
+	}
+	emitStreamFrame = func(id string, payload []byte) error {
+		emitted = append(emitted, append([]byte(nil), payload...))
+		return nil
+	}
+	defer func() {
+		openHTTPStream = openUpstreamStream
+		readStreamChunk = readHostStream
+		emitStreamFrame = emitStreamChunk
+		pumpFinished = nil
+	}()
+	body, _ := json.Marshal(map[string]any{"model": "glm-5.3", "messages": []map[string]any{{"role": "user", "content": "hi"}}})
+	out, err := executeStream(pluginapi.ExecutorRequest{Model: "glm-5.3", Stream: true, Payload: body, StorageJSON: testCredential(siteWorkBuddy)}, "cb", "stream-out", sender)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out["headers"] == nil {
+		t.Fatal("no response headers")
+	}
+	var upstream map[string]any
+	if err := json.Unmarshal(sentPlan.HTTP.Body, &upstream); err != nil {
+		t.Fatal(err)
+	}
+	streamOpts, _ := upstream["stream_options"].(map[string]any)
+	if streamOpts["include_usage"] != true {
+		t.Fatalf("streaming stream_options = %v, want include_usage=true", upstream["stream_options"])
+	}
+	select {
+	case <-finished:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the stream pump never returned")
+	}
+	if len(emitted) != 2 {
+		t.Fatalf("emitted %d frames, want 2: %q", len(emitted), emitted)
+	}
+	for i, frame := range emitted {
+		if !strings.HasPrefix(string(frame), "data: ") || !strings.HasSuffix(string(frame), "\n\n") {
+			t.Fatalf("frame %d lacks SSE framing: %q", i, frame)
+		}
+		if strings.HasPrefix(string(frame), "data: data:") {
+			t.Fatalf("frame %d is double-framed: %q", i, frame)
+		}
+	}
+	joined := string(bytesJoin(emitted))
+	if !strings.Contains(joined, "\"content\":\"Hi\"") {
+		t.Fatalf("frames = %q", joined)
+	}
+	// The host owns stream termination and writes [DONE] itself.
+	if strings.Contains(joined, "[DONE]") {
+		t.Fatalf("frames forwarded [DONE]: %q", joined)
+	}
+}
+
+func TestExecuteStreamFramesTailAndPrefixedEvents(t *testing.T) {
+	resetPluginState()
+	sender := &fakeSender{reply: func(req pluginapi.HTTPRequest) (pluginapi.HTTPResponse, error) {
+		return jsonReply(200, `{"code":0,"data":{"agents":[{"name":"cli","models":["glm-5.3"]}],"models":[{"id":"glm-5.3"}]}}`), nil
+	}}
+	// First event carries an event: field; last event lacks the trailing blank line.
+	chunks := [][]byte{
+		[]byte("event: chunk\ndata: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"A\"}}]}\n\n"),
+		[]byte("data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}"),
+	}
+	next := 0
+	var emitted [][]byte
+	finished := make(chan struct{})
+	pumpFinished = func(string) { close(finished) }
 	openHTTPStream = func(plan requestPlan, callbackID string) (hostStreamResponse, error) {
 		return hostStreamResponse{StatusCode: 200, Headers: http.Header{"Content-Type": {"text/event-stream"}}, StreamID: "stream-1"}, nil
 	}
@@ -534,27 +613,21 @@ func TestExecuteStreamForwardsFrames(t *testing.T) {
 		pumpFinished = nil
 	}()
 	body, _ := json.Marshal(map[string]any{"model": "glm-5.3", "messages": []map[string]any{{"role": "user", "content": "hi"}}})
-	out, err := executeStream(pluginapi.ExecutorRequest{Model: "glm-5.3", Payload: body, StorageJSON: testCredential(siteWorkBuddy)}, "cb", "stream-out", sender)
-	if err != nil {
+	if _, err := executeStream(pluginapi.ExecutorRequest{Model: "glm-5.3", Stream: true, Payload: body, StorageJSON: testCredential(siteWorkBuddy)}, "cb", "stream-out", sender); err != nil {
 		t.Fatal(err)
-	}
-	if out["headers"] == nil {
-		t.Fatal("no response headers")
 	}
 	select {
 	case <-finished:
 	case <-time.After(2 * time.Second):
 		t.Fatal("the stream pump never returned")
 	}
-	joined := string(bytesJoin(emitted))
-	if !strings.Contains(joined, "\"content\":\"Hi\"") {
-		t.Fatalf("frames = %q", joined)
+	if len(emitted) != 2 {
+		t.Fatalf("emitted %d frames, want 2: %q", len(emitted), emitted)
 	}
-	// The pump forwards bare data payloads: the host's handler owns the SSE
-	// framing, and a framed payload would be wrapped again by a host that
-	// forwards plugin chunks unchanged ("data: data: {...}").
-	if strings.Contains(joined, "data:") || strings.Contains(joined, "[DONE]") {
-		t.Fatalf("frames carry SSE framing = %q", joined)
+	want0 := "data: {\"choices\":[{\"index\":0,\"delta\":{\"content\":\"A\"}}]}\n\n"
+	want1 := "data: {\"choices\":[],\"usage\":{\"prompt_tokens\":3,\"completion_tokens\":1}}\n\n"
+	if string(emitted[0]) != want0 || string(emitted[1]) != want1 {
+		t.Fatalf("emitted = %q / %q, want %q / %q", emitted[0], emitted[1], want0, want1)
 	}
 }
 

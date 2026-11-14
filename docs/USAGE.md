@@ -298,10 +298,11 @@ so one conversation does not carry one account's ids under another's user id. A
 header the caller already set is kept. A tool loop therefore stays one request in
 the account's usage detail, and the user's next message becomes the next request.
 
-WorkBuddy streams every chat. A non-streaming client request is answered from that
+WorkBuddy streams every chat, and the plugin asks WorkBuddy for the usage
+chunk on every request so both streaming accounting/translators and non-streaming
+aggregation receive it. A non-streaming client request is answered from that
 stream: content, reasoning, tool calls and usage are assembled into one
-`chat.completion`, and the plugin asks WorkBuddy for the usage chunk so the answer
-carries it.
+`chat.completion`.
 
 The request body is shaped for the endpoint:
 
@@ -401,10 +402,10 @@ Other behaviour worth knowing:
   CPA can decide whether another credential should carry the request.
 - A refusal that arrives inside an `OK` stream keeps its real status: streaming
   requests read up to the first answer event before any chunk reaches the client.
-- A stream event is forwarded as its bare data payload. The host's OpenAI handler
-  adds the `data:` prefix, the blank lines and the terminal `[DONE]` marker itself, so
-  the payload reaches the client exactly once whatever the host's own forwarding does.
-  The plugin forwards no framing of its own.
+- A stream event is forwarded as a complete `data: <json>\n\n` SSE event without
+  `[DONE]`. The host's deframer normalizes same-format streams while cross-format
+  translators (such as OpenAI to Anthropic) parse the `data:` prefix directly, and
+  the host writes the terminal marker itself.
 - A non-streaming answer with no text, no reasoning and no tool call is reported as
   `502` rather than an empty `200`.
 - Panics are caught at the plugin boundary and answered as a machine-coded error, and
